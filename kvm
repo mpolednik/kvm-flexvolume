@@ -1,0 +1,159 @@
+#!/bin/bash
+# Notes:
+#  - POC based on https://github.com/kubernetes/kubernetes/tree/master/examples/volumes/flexvolume
+#  - Please install "jq" package before using this driver.
+usage() {
+        err "Invalid usage. Usage: "
+        err "\t$0 init"
+        err "\t$0 attach <json params> <nodename>"
+        err "\t$0 detach <mount device> <nodename>"
+        err "\t$0 waitforattach <mount device> <json params>"
+        err "\t$0 mountdevice <mount dir> <mount device> <json params>"
+        err "\t$0 unmountdevice <mount dir>"
+        err "\t$0 isattached <json params> <nodename>"
+        exit 1
+}
+
+err() {
+        echo -ne $* 1>&2
+}
+
+log() {
+        echo -ne $* >&1
+}
+
+ismounted() {
+        ls ${MNTPATH}/kvm &> /dev/null
+
+        if [ $? -eq 0 ]; then
+                echo "1"
+        else
+                echo "0"
+        fi
+}
+
+attach() {
+        # This needs to detect AMD too (`modprobe kvm` won't get us far enough AFAIK).
+        modprobe kvm_intel
+
+        if [ ! $? -eq 0 ]; then
+                err "{\"status\": \"Failure\", \"message\": \"Could not initialize KVM\"}"
+                exit 1
+        fi
+        log "{\"status\": \"Success\", \"device\":\"/dev/kvm\"}"
+        exit 0
+}
+
+detach() {
+        rmmod kvm_intel kvm
+
+        if [ ! $? -eq 0 ]; then
+                err "{\"status\": \"Failure\", \"message\": \"Could not de-initialize KVM\"}"
+                exit 1
+        fi
+        log "{\"status\": \"Success\"}"
+        exit 0
+}
+
+waitforattach() {
+        shift
+        attach $*
+}
+
+domountdevice() {
+        MNTPATH=$1
+        KVM=$2
+
+        if [ ! -c "${KVM}" ]; then
+                err "{\"status\": \"Failure\", \"message\": \"${KVM} does not exist\"}"
+                exit 1
+        fi
+
+        if [ $(ismounted) -eq 1 ] ; then
+                log "{\"status\": \"Success\"}"
+                exit 0
+        fi
+
+        mkdir -p ${MNTPATH} &> /dev/null
+
+        ln -s ${KVM} ${MNTPATH} &> /dev/null
+        if [ $? -ne 0 ]; then
+                err "{ \"status\": \"Failure\", \"message\": \"Failed to mount device ${KVM} at ${MNTPATH}\"}"
+                exit 1
+        fi
+        log "{\"status\": \"Success\"}"
+        exit 0
+}
+
+unmountdevice() {
+        MNTPATH=$1
+        if [ ! -d ${MNTPATH} ]; then
+                log "{\"status\": \"Success\"}"
+                exit 0
+        fi
+
+        if [ $(ismounted) -eq 0 ] ; then
+                log "{\"status\": \"Success\"}"
+                exit 0
+        fi
+
+        rm -rf ${MNTPATH} &> /dev/null
+        if [ $? -ne 0 ]; then
+                err "{ \"status\": \"Failed\", \"message\": \"Failed to unmount volume at ${MNTPATH}\"}"
+                exit 1
+        fi
+
+        log "{\"status\": \"Success\"}"
+        exit 0
+}
+
+isattached() {
+        ls /dev/kvm &> /dev/null
+
+        if [ ! $? -eq 0 ]; then
+            log "{\"status\": \"Failed\", \"attached\":false}"
+        fi
+
+        log "{\"status\": \"Success\", \"attached\":true}"
+        exit 0
+}
+
+op=$1
+
+if [ "$op" = "init" ]; then
+        log "{\"status\": \"Success\"}"
+        exit 0
+fi
+
+if [ $# -lt 2 ]; then
+        usage
+fi
+
+shift
+
+case "$op" in
+        attach)
+                attach $*
+                ;;
+        detach)
+                detach $*
+                ;;
+        waitforattach)
+                waitforattach $*
+                ;;
+        mountdevice)
+                domountdevice $*
+                ;;
+        unmountdevice)
+                unmountdevice $*
+                ;;
+        isattached)
+                isattached $*
+                ;;
+        *)
+                log "{ \"status\": \"Not supported\" }"
+                exit 0
+esac
+
+exit 1
+
